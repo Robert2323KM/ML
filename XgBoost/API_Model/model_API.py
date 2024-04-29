@@ -56,4 +56,4 @@ def predict():
 
 if __name__ == '__main__':
     print(pd.read_csv('https://raw.githubusercontent.com/davidzarruk/MIAD_ML_NLP_2023/main/datasets/dataTest_carListings.zip', index_col=0))
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
