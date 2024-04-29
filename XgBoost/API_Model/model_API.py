@@ -1,52 +1,70 @@
-from flask import Flask, jsonify, request
+from flask import Flask
+from flask_restx import Api, Resource, fields
 import pandas as pd
 import joblib
-import numpy as np
 import requests
 from io import BytesIO
 import zipfile
-import ssl
 
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-
+# Create Flask application
 app = Flask(__name__)
 
-# Load the pre-trained models
-models = [joblib.load(f'xgb_model{i}.joblib') for i in range(1, 3)]  # Adjust range based on model count
+# Define API using Flask-RESTx
+api = Api(
+    app,
+    version='1.0',
+    title='Car Price Prediction API',
+    description='API for predicting car prices based on various features.')
 
-@app.route('/predict', methods=['GET'])
-def predict():
-    data_url = request.args.get('url')
-    if not data_url:
-        return jsonify({'error': 'Missing URL parameter'}), 400
+# Namespace for predictions
+ns = api.namespace('predict', description='Car Price Predictions')
 
-    try:
-        print(f"Fetching data from: {data_url}")
-        response = requests.get(data_url)
+# Parser for incoming request arguments
+parser = api.parser()
+parser.add_argument(
+    'url',
+    type=str,
+    required=True,
+    help='URL to the dataset (CSV format expected).',
+    location='args')
+
+# Model for output
+resource_fields = api.model('Resource', {
+    'result': fields.List(fields.Float),
+})
+
+# Load pre-trained XGBoost models
+models = [joblib.load(f'xgb_model{i}.joblib') for i in range(1, 17)]
+
+# Define the class for the prediction resource
+@ns.route('/')
+class PricePredictionApi(Resource):
+
+    @api.doc(parser=parser)
+    @api.marshal_with(resource_fields)
+    def get(self):
+        args = parser.parse_args()
+        dataset_url = args['url']
+
+        # Fetch and prepare the data
+        response = requests.get(dataset_url)
         if response.status_code != 200:
-            return jsonify({'error': 'Failed to fetch data'}), 500
+            api.abort(500, "Failed to fetch data from provided URL.")
 
         with zipfile.ZipFile(BytesIO(response.content)) as thezip:
             with thezip.open(thezip.namelist()[0]) as thefile:
                 data = pd.read_csv(thefile)
 
+        # Feature engineering
         data['car_age'] = 2023 - data['Year']
         data.drop(['Year'], axis=1, inplace=True)
 
-        predictions = []
-        for i, model in enumerate(models, 1):
-            model_predictions = model.predict(data)
-            predictions.append(model_predictions)
-            print(f"Model {i} predicted: {model_predictions[:5]}")  # Print the first few predictions of each model
+        # Predict using all models and average the results
+        predictions = [model.predict(data) for model in models]
+        avg_predictions = np.mean(predictions, axis=0).tolist()  # Convert to list for JSON serialization
 
-        avg_predictions = np.mean(predictions, axis=0)
-        results = {'Predictions': [{'ID': int(idx), 'Predicted_Price': float(pred)} for idx, pred in zip(data.index, avg_predictions)]}
-        return jsonify(results), 200
+        return {'result': avg_predictions}
 
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
+# Run the Flask app
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
